@@ -1,0 +1,36 @@
+{
+  "name": "tubes2_reservasi",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "ts-node-dev --respawn src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YavieAzka/Tubes2_RESERVASI.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/YavieAzka/Tubes2_RESERVASI/issues"
+  },
+  "homepage": "https://github.com/YavieAzka/Tubes2_RESERVASI#readme",
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "nodemon": "^3.1.14",
+    "ts-node-dev": "^2.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.15.0",
+    "cheerio": "^1.2.0",
+    "express": "^5.2.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.2"
+  }
+}
