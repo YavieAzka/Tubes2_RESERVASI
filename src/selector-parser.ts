@@ -54,15 +54,16 @@ export class SelectorParser{
             else{
                 buffer.push(token);
             }
-
-            if (buffer.length === 0){
-                throw new Error(`SelectorParser: Selector tidak boleh diakhir dengan combinator.`)
-            }
-
-            steps.push({combinator: curCombinator, selector: this.buildSimpleSelector(buffer),});
         }
 
+        if (buffer.length === 0){
+            throw new Error(`SelectorParser: Selector tidak boleh diakhir dengan combinator.`)
+            
+        }
+        
+        steps.push({ combinator: curCombinator, selector: this.buildSimpleSelector(buffer) });
         return steps;
+        
     }
 
 
