@@ -30,6 +30,8 @@
     "axios": "^1.15.0",
     "cheerio": "^1.2.0",
     "express": "^5.2.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.2"
   }
