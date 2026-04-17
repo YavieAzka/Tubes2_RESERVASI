@@ -67,4 +67,18 @@ export class DOMNode {
   public get id(): string | null {
     return this.attributes["id"] || null;
   }
+
+  public static rehydrate(plainNode: any): DOMNode {
+    const node = new DOMNode(plainNode.tag);
+    node.attributes = plainNode.attributes || {};
+    node.text = plainNode.text || "";
+
+    if (plainNode.children) {
+      for (const child of plainNode.children) {
+        const rehydratedChild = DOMNode.rehydrate(child);
+        node.addChild(rehydratedChild);
+      }
+    }
+    return node;
+  }
 }
