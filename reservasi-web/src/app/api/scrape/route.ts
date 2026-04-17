@@ -126,65 +126,145 @@ async function runMultithreadedQuery(
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    // Require 'algo' from the frontend (default to BFS if missing)
-    const { url, selector, algo = "BFS" } = body;
 
-    if (!url) {
-      return NextResponse.json(
-        { success: false, error: "URL tidak diberikan" },
-        { status: 400 },
-      );
+    // Bypass untuk query LCA agar backend tidak crash saat tombol LCA ditekan
+    if (body.lcaNodeA !== undefined && body.lcaNodeB !== undefined) {
+      return NextResponse.json({ success: true, lca: null });
     }
 
-    const htmlString = await scrapeHTML(url);
+    // Ekstrak parameter baru dari frontend
+    const { url, html, mode = "url", selector, algorithm = "BFS" } = body;
+
+    let htmlString = "";
+    if (mode === "url") {
+      if (!url)
+        return NextResponse.json(
+          { success: false, error: "URL tidak diberikan" },
+          { status: 400 },
+        );
+      htmlString = await scrapeHTML(url);
+    } else {
+      if (!html)
+        return NextResponse.json(
+          { success: false, error: "HTML kosong" },
+          { status: 400 },
+        );
+      htmlString = html;
+    }
+
     const root = DOMParser.parse(htmlString);
-
     const maxTreeDepth = getMaxDepth(root);
-    const serializedTree = serializeTreeForFrontend(root);
 
-    let results: any[] = [];
+    // --- FRONTEND ADAPTER: Buat Flat Tree & ID Numerik ---
+    const nodeToNumericId = new Map<DOMNode, number>();
+    let currentNumericId = 1;
+    const flatTree: Record<number, any> = {};
+
+    function traverseAndFlatten(
+      node: DOMNode,
+      depth: number,
+      parentId: number | null,
+    ): number {
+      const id = currentNumericId++;
+      nodeToNumericId.set(node, id);
+
+      const childIds: number[] = [];
+      for (const child of node.children) {
+        childIds.push(traverseAndFlatten(child, depth + 1, id));
+      }
+
+      flatTree[id] = {
+        id,
+        tag: node.tag,
+        attributes: node.attributes,
+        text:
+          node.text.length > 50
+            ? node.text.substring(0, 50) + "..."
+            : node.text,
+        depth,
+        parentId,
+        childIds,
+      };
+      return id;
+    }
+
+    // Mulai pembuatan flat tree dari root
+    traverseAndFlatten(root, 0, null);
+
+    let finalData: any[] = [];
     let executionTimeMs = 0;
     let nodesVisited = 0;
-    let traversalLog: any[] = [];
+    let steps: any[] = [];
+    let traversalLogStrings: string[] = [];
 
     if (selector && selector.trim() !== "") {
       const startTime = performance.now();
-
-      const queryResult = await runMultithreadedQuery(root, selector, algo);
-
+      const queryResult = await runMultithreadedQuery(
+        root,
+        selector,
+        algorithm,
+      );
       const endTime = performance.now();
 
       executionTimeMs = endTime - startTime;
       nodesVisited = queryResult.visitedCount;
-      traversalLog = queryResult.traversalLog;
 
-      results = queryResult.matchedNodes.map((node) => ({
-        tag: node.tag,
-        text: node.text,
-        attributes: node.attributes,
-        classes: node.classes,
-        id: node.id,
-      }));
-    } else {
-      results = [
-        {
-          info: "Tidak ada selector spesifik yang diminta. Menampilkan sebagian dari dokumen HTML.",
-          htmlPreview: htmlString.substring(0, 500) + "...",
-        },
-      ];
+      // Generate animation steps (VISIT) dan string log
+      const sequence = getTraversalSequence(root, algorithm);
+      sequence.forEach((node) => {
+        const numericId = nodeToNumericId.get(node)!;
+        steps.push({
+          nodeId: numericId,
+          tag: node.tag,
+          depth: flatTree[numericId].depth,
+          action: "visit",
+          parentId: flatTree[numericId].parentId,
+          timestamp: Date.now(),
+        });
+        traversalLogStrings.push(`[VISIT] <${node.tag}> (id=${numericId})`);
+      });
+
+      // Tambahkan status MATCH ke steps untuk node yang ditemukan
+      finalData = queryResult.matchedNodes.map((node) => {
+        const numericId = nodeToNumericId.get(node)!;
+
+        steps.push({
+          nodeId: numericId,
+          tag: node.tag,
+          depth: flatTree[numericId].depth,
+          action: "match",
+          parentId: flatTree[numericId].parentId,
+          timestamp: Date.now(),
+        });
+        traversalLogStrings.push(
+          `[MATCH] <${node.tag}> (id=${numericId}) ditemukan!`,
+        );
+
+        return {
+          id: numericId,
+          tag: node.tag,
+          text: node.text,
+          attributes: node.attributes,
+          depth: flatTree[numericId].depth,
+        };
+      });
     }
 
+    // Kembalikan JSON dengan format yang presisi sesuai ApiResponse page.tsx
     return NextResponse.json({
       success: true,
-      message: "Scraping & Parsing berhasil",
-      algorithm: algo,
-      executionTimeMs: Number(executionTimeMs.toFixed(2)),
-      nodesVisited: nodesVisited,
-      maxDepth: maxTreeDepth,
-      traversalLog: traversalLog, // The log containing traversal steps
-      treeData: serializedTree,
-      matchedCount: results.length,
-      data: results,
+      data: finalData,
+      tree: flatTree,
+      steps: steps,
+      traversalLog: traversalLogStrings,
+      stats: {
+        visitedCount: nodesVisited,
+        matchedCount: finalData.length,
+        timeMs: Number(executionTimeMs.toFixed(2)),
+        maxDepth: maxTreeDepth,
+        totalTimeMs: Number(executionTimeMs.toFixed(2)),
+      },
+      lca: null,
     });
   } catch (error: any) {
     console.error("Scraping Error:", error);
