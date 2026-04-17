@@ -4,6 +4,7 @@ import { DOMParser } from "@/core/parser";
 import { Worker } from "worker_threads";
 import path from "path";
 import { DOMNode } from "@/core/domtree";
+import { TreeTraversal } from "@/core/traversal";
 
 // 1. Helper to flatten tree based on BFS or DFS selection
 function getTraversalSequence(root: DOMNode, algo: "BFS" | "DFS"): DOMNode[] {
@@ -123,13 +124,72 @@ async function runMultithreadedQuery(
   });
 }
 
+
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    // Bypass untuk query LCA agar backend tidak crash saat tombol LCA ditekan
-    if (body.lcaNodeA !== undefined && body.lcaNodeB !== undefined) {
-      return NextResponse.json({ success: true, lca: null });
+    //  LCA Query: reconstruct tree dari serializedTree, pakai TreeTraversal 
+    if (body.lcaNodeA !== undefined && body.lcaNodeB !== undefined && body.serializedTree) {
+      const flatTree = body.serializedTree as Record<number, any>;
+      const nodeMap = new Map<number, DOMNode>();
+
+      // Pass 1: buat semua DOMNode
+      for (const [idStr, data] of Object.entries(flatTree)) {
+        const node = new DOMNode(data.tag);
+        node.attributes = data.attributes ?? {};
+        node.text = data.text ?? "";
+        nodeMap.set(Number(idStr), node);
+      }
+
+      // Pass 2: sambungkan parent-child pointer
+      let lcaRoot: DOMNode | null = null;
+      for (const [idStr, data] of Object.entries(flatTree)) {
+        const id = Number(idStr);
+        const node = nodeMap.get(id)!;
+        if (data.parentId == null) {
+          lcaRoot = node;
+        } else {
+          const parent = nodeMap.get(data.parentId);
+          if (parent) node.parent = parent;
+        }
+        for (const childId of (data.childIds ?? [])) {
+          const child = nodeMap.get(childId);
+          if (child) node.children.push(child);
+        }
+      }
+
+      const empty = { success: true, lca: { lcaNodeId: null, lcaTag: null, pathNodeIds: [], pathWithRole: [] } };
+      if (!lcaRoot) return NextResponse.json(empty);
+
+      // Preprocess + query pakai TreeTraversal dari traversal.ts
+      TreeTraversal.preprocess(lcaRoot);
+
+      const nodeA = nodeMap.get(Number(body.lcaNodeA));
+      const nodeB = nodeMap.get(Number(body.lcaNodeB));
+      if (!nodeA || !nodeB) return NextResponse.json(empty);
+
+      const ancestor = TreeTraversal.lca(nodeA, nodeB);
+      const path = ancestor ? TreeTraversal.getPathBetween(nodeA, nodeB) : [];
+
+      // Mapping DOMNode → id
+      const nodeToId = new Map<DOMNode, number>();
+      for (const [id, node] of nodeMap) nodeToId.set(node, id);
+
+      return NextResponse.json({
+        success: true,
+        lca: {
+          lcaNodeId: ancestor ? nodeToId.get(ancestor) ?? null : null,
+          lcaTag: ancestor?.tag ?? null,
+          pathNodeIds: path.map(n => nodeToId.get(n) ?? -1).filter(id => id !== -1),
+          pathWithRole: path.map(n => ({
+            id: nodeToId.get(n) ?? -1,
+            tag: n.tag,
+            isLca: n === ancestor,
+          })).filter(p => p.id !== -1),
+        }
+      });
     }
 
     // Ekstrak parameter baru dari frontend
@@ -155,7 +215,7 @@ export async function POST(request: Request) {
     const root = DOMParser.parse(htmlString);
     const maxTreeDepth = getMaxDepth(root);
 
-    // --- FRONTEND ADAPTER: Buat Flat Tree & ID Numerik ---
+    //  FRONTEND ADAPTER: Buat Flat Tree & ID Numerik 
     const nodeToNumericId = new Map<DOMNode, number>();
     let currentNumericId = 1;
     const flatTree: Record<number, any> = {};
@@ -209,37 +269,82 @@ export async function POST(request: Request) {
       executionTimeMs = endTime - startTime;
       nodesVisited = queryResult.visitedCount;
 
-      // Generate animation steps (VISIT) dan string log
+      // Buat Set id dari node yang match untuk lookup O(1)
+      const matchedSet = new Set<DOMNode>(queryResult.matchedNodes);
+
+      // Hitung "ancestorPath", semua ancestor dari setiap matched node
+      const onPathSet = new Set<DOMNode>();
+      for (const matchedNode of queryResult.matchedNodes) {
+        let cur = matchedNode.parent;
+        while (cur) {
+          onPathSet.add(cur);
+          cur = cur.parent;
+        }
+      }
+
+      // Buat limit untuk early stop animasi
+      const limitTop = body.limitType === "top" && typeof body.limit === "number"
+        ? body.limit
+        : undefined;
+
       const sequence = getTraversalSequence(root, algorithm);
-      sequence.forEach((node) => {
+      let matchCount = 0;
+      let stopped = false;
+
+      for (const node of sequence) {
+        if (stopped) break;
         const numericId = nodeToNumericId.get(node)!;
+        const nodeInfo = flatTree[numericId];
+
+        // Step VISIT
         steps.push({
           nodeId: numericId,
           tag: node.tag,
-          depth: flatTree[numericId].depth,
+          depth: nodeInfo.depth,
           action: "visit",
-          parentId: flatTree[numericId].parentId,
+          parentId: nodeInfo.parentId,
           timestamp: Date.now(),
         });
-        traversalLogStrings.push(`[VISIT] <${node.tag}> (id=${numericId})`);
-      });
+        traversalLogStrings.push(`[${algorithm}] Visit <${node.tag}> (id=${numericId}, depth=${nodeInfo.depth})`);
 
-      // Tambahkan status MATCH ke steps untuk node yang ditemukan
-      finalData = queryResult.matchedNodes.map((node) => {
+        if (matchedSet.has(node)) {
+          // Step MATCH
+          steps.push({
+            nodeId: numericId,
+            tag: node.tag,
+            depth: nodeInfo.depth,
+            action: "match",
+            parentId: nodeInfo.parentId,
+            timestamp: Date.now(),
+          });
+          traversalLogStrings.push(`[${algorithm}] ✓ MATCH <${node.tag}> (id=${numericId})`);
+          matchCount++;
+
+          // Early stop jika limit tercapai
+          if (limitTop !== undefined && matchCount >= limitTop) {
+            traversalLogStrings.push(`[${algorithm}] Limit ${limitTop} tercapai, pencarian dihentikan.`);
+            stopped = true;
+          }
+        } else if (algorithm === "DFS" && !onPathSet.has(node)) {
+          steps.push({
+            nodeId: numericId,
+            tag: node.tag,
+            depth: nodeInfo.depth,
+            action: "backtrack",
+            parentId: nodeInfo.parentId,
+            timestamp: Date.now(),
+          });
+          traversalLogStrings.push(`[DFS] Backtrack <${node.tag}> (id=${numericId})`);
+        }
+      }
+
+      // Format final data (hanya matched nodes, dibatasi limitTop)
+      const limitedMatched = limitTop !== undefined
+        ? queryResult.matchedNodes.slice(0, limitTop)
+        : queryResult.matchedNodes;
+
+      finalData = limitedMatched.map((node) => {
         const numericId = nodeToNumericId.get(node)!;
-
-        steps.push({
-          nodeId: numericId,
-          tag: node.tag,
-          depth: flatTree[numericId].depth,
-          action: "match",
-          parentId: flatTree[numericId].parentId,
-          timestamp: Date.now(),
-        });
-        traversalLogStrings.push(
-          `[MATCH] <${node.tag}> (id=${numericId}) ditemukan!`,
-        );
-
         return {
           id: numericId,
           tag: node.tag,

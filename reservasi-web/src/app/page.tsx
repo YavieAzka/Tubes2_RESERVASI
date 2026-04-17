@@ -150,7 +150,7 @@ function buildLayout(tree: Record<number, SerializedNode>): LayoutNode[] {
 function getNodeColor(
   id: number,
   currentStep: TraversalStep | null,
-  nodeStates: Map<number, "visit" | "match" | "backtrack">,
+  nodeStates: Map<number, "visit" | "match" | "backtrack" | "onPath">,
   isDone: boolean,
   lcaResult: { lcaNodeId: number | null; pathNodeIds: number[] } | null,
 ) {
@@ -170,6 +170,8 @@ function getNodeColor(
     return { fill: "#FBBF24", stroke: "#F59E0B", text: "#1a1a2e" };
   if (state === "match")
     return { fill: "#10B981", stroke: "#059669", text: "#fff" };
+  if (state === "onPath")
+    return { fill: "#6366f1", stroke: "#4F46E5", text: "#fff" };
   if (state === "visit" && isDone)
     return { fill: "#6366f1", stroke: "#4F46E5", text: "#fff" };
   if (state === "backtrack")
@@ -210,7 +212,7 @@ export default function Home() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [stepIndex, setStepIndex] = useState(-1);
   const [nodeStates, setNodeStates] = useState<
-    Map<number, "visit" | "match" | "backtrack">
+    Map<number, "visit" | "match" | "backtrack" | "onPath">
   >(new Map());
   const [isDone, setIsDone] = useState(false);
   const animRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -272,10 +274,22 @@ export default function Home() {
       setResult(json);
       setLayout(buildLayout(json.tree));
 
-      // If no animation, mark all matches immediately
+      // If no animation, mark matches + ancestors immediately
       if (!animateOn) {
-        const states = new Map<number, "visit" | "match" | "backtrack">();
+        const states = new Map<number, "visit" | "match" | "backtrack" | "onPath">();
+        const matchIds = new Set(json.data.map((m) => m.id));
+        // Mark matched nodes hijau
         for (const m of json.data) states.set(m.id, "match");
+        // Mark ancestor path ungu — traverse parentId chain dari setiap match
+        for (const m of json.data) {
+          let parentId = json.tree[m.id]?.parentId;
+          while (parentId != null) {
+            if (!matchIds.has(parentId)) {
+              states.set(parentId, "onPath");
+            }
+            parentId = json.tree[parentId]?.parentId ?? null;
+          }
+        }
         setNodeStates(states);
         setIsDone(true);
       }
@@ -291,7 +305,7 @@ export default function Home() {
     (
       idx: number,
       steps: TraversalStep[],
-      states: Map<number, "visit" | "match" | "backtrack">,
+      states: Map<number, "visit" | "match" | "backtrack" | "onPath">,
     ) => {
       if (idx >= steps.length) {
         setIsDone(true);
@@ -302,8 +316,18 @@ export default function Home() {
       const step = steps[idx];
       const newStates = new Map(states);
 
-      // Jangan overwrite state "match" dengan apapun — node match harus tetap hijau
-      if (newStates.get(step.nodeId) !== "match") {
+      const currentState = newStates.get(step.nodeId);
+      // Aturan overwrite state:
+      // 1. "match" tidak pernah bisa di-overwrite — node hijau tetap hijau
+      // 2. "onPath" tidak bisa di-overwrite oleh "backtrack" — jalur ke answer tetap ungu
+      // 3. "backtrack" (merah) tidak bisa di-overwrite oleh "visit" ulang —
+      //    sekali merah tetap merah (visit kedua sebelum backtrack sudah cukup untuk animasi ungu)
+      const isProtected =
+        currentState === "match" ||
+        (currentState === "onPath" && step.action === "backtrack") ||
+        (currentState === "backtrack" && step.action === "visit");
+
+      if (!isProtected) {
         newStates.set(step.nodeId, step.action);
       }
 
@@ -1122,7 +1146,8 @@ export default function Home() {
                       { color: "#FBBF24", label: "Active" },
                       { color: "#6366f1", label: "Visited" },
                       { color: "#10B981", label: "Match" },
-                      { color: "#EF4444", label: "Backtrack" },
+                      { color: "#6366f1", label: "On-path" },
+                      { color: "#EF4444", label: "Buntu" },
                       { color: "#06B6D4", label: "LCA" },
                       { color: "#F97316", label: "LCA Path" },
                     ].map((l) => (
