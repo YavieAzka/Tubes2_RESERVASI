@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
 import { scrapeHTML } from "@/core/scraper";
 import { DOMParser } from "@/core/parser";
-import { Worker } from "worker_threads";
-import path from "path";
 import { DOMNode } from "@/core/domtree";
 import { TreeTraversal } from "@/core/traversal";
+import { SelectorParser } from "@/core/selector-parser";
+import { SelectorMatcher } from "@/core/selector-matcher";
 
 // 1. Helper to flatten tree based on BFS or DFS selection
 function getTraversalSequence(root: DOMNode, algo: "BFS" | "DFS"): DOMNode[] {
@@ -55,8 +55,8 @@ function serializeTreeForFrontend(node: DOMNode): any {
   };
 }
 
-// 4. Multithreaded query runner
-async function runMultithreadedQuery(
+// 4. Single-threaded query runner
+async function runSingleThreadedQuery(
   root: DOMNode,
   selector: string,
   algo: "BFS" | "DFS",
@@ -65,73 +65,44 @@ async function runMultithreadedQuery(
   visitedCount: number;
   traversalLog: any[];
 }> {
-  return new Promise((resolve, reject) => {
-    // Determine the traversal sequence based on user input
-    const allNodes = getTraversalSequence(root, algo);
-    const totalNodes = allNodes.length;
-    const numThreads = 4;
-    const chunkSize = Math.ceil(totalNodes / numThreads);
+  // Determine the traversal sequence based on user input
+  const allNodes = getTraversalSequence(root, algo);
+  const totalNodes = allNodes.length;
 
-    let completedWorkers = 0;
-    let allMatchedIndices: number[] = [];
+  const parsedSelector = SelectorParser.parse(selector);
+  const matchedNodes: DOMNode[] = [];
 
-    for (let i = 0; i < numThreads; i++) {
-      const startIdx = i * chunkSize;
-      const endIdx = startIdx + chunkSize;
-
-      const workerPath = path.resolve(
-        process.cwd(),
-        "src/core/traversal.worker.js",
-      );
-      const worker = new Worker(workerPath);
-
-      worker.postMessage({
-        plainTree: root,
-        selector: selector,
-        startIdx: startIdx,
-        endIdx: endIdx,
-      });
-
-      worker.on("message", (matchedIndices: number[]) => {
-        allMatchedIndices.push(...matchedIndices);
-        completedWorkers++;
-
-        if (completedWorkers === numThreads) {
-          const matchedNodes = allMatchedIndices.map((idx) => allNodes[idx]);
-
-          // Generate a lightweight traversal log for the frontend
-          const traversalLog = allNodes.map((node, index) => ({
-            step: index + 1,
-            tag: node.tag,
-            id: node.id || null,
-            classes: node.classes || [],
-          }));
-
-          resolve({
-            matchedNodes,
-            visitedCount: totalNodes,
-            traversalLog,
-          });
-        }
-      });
-
-      worker.on("error", reject);
-      worker.on("exit", (code) => {
-        if (code !== 0)
-          reject(new Error(`Worker stopped with exit code ${code}`));
-      });
+  for (const node of allNodes) {
+    if (SelectorMatcher.matches(node, parsedSelector)) {
+      matchedNodes.push(node);
     }
-  });
+  }
+
+  // Generate a lightweight traversal log for the frontend
+  const traversalLog = allNodes.map((node, index) => ({
+    step: index + 1,
+    tag: node.tag,
+    id: node.id || null,
+    classes: node.classes || [],
+  }));
+
+  return {
+    matchedNodes,
+    visitedCount: totalNodes,
+    traversalLog,
+  };
 }
-
-
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
 
-    //  LCA Query: reconstruct tree dari serializedTree, pakai TreeTraversal 
-    if (body.lcaNodeA !== undefined && body.lcaNodeB !== undefined && body.serializedTree) {
+    //  LCA Query: reconstruct tree dari serializedTree, pakai TreeTraversal
+    if (
+      body.lcaNodeA !== undefined &&
+      body.lcaNodeB !== undefined &&
+      body.serializedTree
+    ) {
       const flatTree = body.serializedTree as Record<number, any>;
       const nodeMap = new Map<number, DOMNode>();
 
@@ -154,13 +125,21 @@ export async function POST(request: Request) {
           const parent = nodeMap.get(data.parentId);
           if (parent) node.parent = parent;
         }
-        for (const childId of (data.childIds ?? [])) {
+        for (const childId of data.childIds ?? []) {
           const child = nodeMap.get(childId);
           if (child) node.children.push(child);
         }
       }
 
-      const empty = { success: true, lca: { lcaNodeId: null, lcaTag: null, pathNodeIds: [], pathWithRole: [] } };
+      const empty = {
+        success: true,
+        lca: {
+          lcaNodeId: null,
+          lcaTag: null,
+          pathNodeIds: [],
+          pathWithRole: [],
+        },
+      };
       if (!lcaRoot) return NextResponse.json(empty);
 
       // Preprocess + query pakai TreeTraversal dari traversal.ts
@@ -180,15 +159,19 @@ export async function POST(request: Request) {
       return NextResponse.json({
         success: true,
         lca: {
-          lcaNodeId: ancestor ? nodeToId.get(ancestor) ?? null : null,
+          lcaNodeId: ancestor ? (nodeToId.get(ancestor) ?? null) : null,
           lcaTag: ancestor?.tag ?? null,
-          pathNodeIds: path.map(n => nodeToId.get(n) ?? -1).filter(id => id !== -1),
-          pathWithRole: path.map(n => ({
-            id: nodeToId.get(n) ?? -1,
-            tag: n.tag,
-            isLca: n === ancestor,
-          })).filter(p => p.id !== -1),
-        }
+          pathNodeIds: path
+            .map((n) => nodeToId.get(n) ?? -1)
+            .filter((id) => id !== -1),
+          pathWithRole: path
+            .map((n) => ({
+              id: nodeToId.get(n) ?? -1,
+              tag: n.tag,
+              isLca: n === ancestor,
+            }))
+            .filter((p) => p.id !== -1),
+        },
       });
     }
 
@@ -215,24 +198,30 @@ export async function POST(request: Request) {
     const root = DOMParser.parse(htmlString);
     const maxTreeDepth = getMaxDepth(root);
 
-    //  FRONTEND ADAPTER: Buat Flat Tree & ID Numerik 
+    //  FRONTEND ADAPTER: Buat Flat Tree & ID Numerik
+    // Kita gunakan urutan sesuai algoritma agar ID mencerminkan urutan kunjungan
+    const sequence = getTraversalSequence(root, algorithm);
     const nodeToNumericId = new Map<DOMNode, number>();
-    let currentNumericId = 1;
     const flatTree: Record<number, any> = {};
 
-    function traverseAndFlatten(
-      node: DOMNode,
-      depth: number,
-      parentId: number | null,
-    ): number {
-      const id = currentNumericId++;
-      nodeToNumericId.set(node, id);
-
-      const childIds: number[] = [];
-      for (const child of node.children) {
-        childIds.push(traverseAndFlatten(child, depth + 1, id));
+    // Hitung depth untuk setiap node (bisa pakai helper getDepth dari traversal.ts atau manual)
+    const getDepthManual = (node: DOMNode): number => {
+      let d = 0;
+      let cur = node.parent;
+      while (cur) {
+        d++;
+        cur = cur.parent;
       }
+      return d;
+    };
 
+    sequence.forEach((node, index) => {
+      const id = index + 1; // ID mulai dari 1
+      nodeToNumericId.set(node, id);
+    });
+
+    sequence.forEach((node) => {
+      const id = nodeToNumericId.get(node)!;
       flatTree[id] = {
         id,
         tag: node.tag,
@@ -241,15 +230,13 @@ export async function POST(request: Request) {
           node.text.length > 50
             ? node.text.substring(0, 50) + "..."
             : node.text,
-        depth,
-        parentId,
-        childIds,
+        depth: getDepthManual(node),
+        parentId: node.parent ? nodeToNumericId.get(node.parent) : null,
+        childIds: node.children
+          .map((c) => nodeToNumericId.get(c))
+          .filter((cid) => cid !== undefined),
       };
-      return id;
-    }
-
-    // Mulai pembuatan flat tree dari root
-    traverseAndFlatten(root, 0, null);
+    });
 
     let finalData: any[] = [];
     let executionTimeMs = 0;
@@ -259,7 +246,7 @@ export async function POST(request: Request) {
 
     if (selector && selector.trim() !== "") {
       const startTime = performance.now();
-      const queryResult = await runMultithreadedQuery(
+      const queryResult = await runSingleThreadedQuery(
         root,
         selector,
         algorithm,
@@ -283,11 +270,11 @@ export async function POST(request: Request) {
       }
 
       // Buat limit untuk early stop animasi
-      const limitTop = body.limitType === "top" && typeof body.limit === "number"
-        ? body.limit
-        : undefined;
+      const limitTop =
+        body.limitType === "top" && typeof body.limit === "number"
+          ? body.limit
+          : undefined;
 
-      const sequence = getTraversalSequence(root, algorithm);
       let matchCount = 0;
       let stopped = false;
 
@@ -305,7 +292,9 @@ export async function POST(request: Request) {
           parentId: nodeInfo.parentId,
           timestamp: Date.now(),
         });
-        traversalLogStrings.push(`[${algorithm}] Visit <${node.tag}> (id=${numericId}, depth=${nodeInfo.depth})`);
+        traversalLogStrings.push(
+          `[${algorithm}] Visit <${node.tag}> (id=${numericId}, depth=${nodeInfo.depth})`,
+        );
 
         if (matchedSet.has(node)) {
           // Step MATCH
@@ -317,12 +306,16 @@ export async function POST(request: Request) {
             parentId: nodeInfo.parentId,
             timestamp: Date.now(),
           });
-          traversalLogStrings.push(`[${algorithm}] ✓ MATCH <${node.tag}> (id=${numericId})`);
+          traversalLogStrings.push(
+            `[${algorithm}] ✓ MATCH <${node.tag}> (id=${numericId})`,
+          );
           matchCount++;
 
           // Early stop jika limit tercapai
           if (limitTop !== undefined && matchCount >= limitTop) {
-            traversalLogStrings.push(`[${algorithm}] Limit ${limitTop} tercapai, pencarian dihentikan.`);
+            traversalLogStrings.push(
+              `[${algorithm}] Limit ${limitTop} tercapai, pencarian dihentikan.`,
+            );
             stopped = true;
           }
         } else if (algorithm === "DFS" && !onPathSet.has(node)) {
@@ -334,14 +327,17 @@ export async function POST(request: Request) {
             parentId: nodeInfo.parentId,
             timestamp: Date.now(),
           });
-          traversalLogStrings.push(`[DFS] Backtrack <${node.tag}> (id=${numericId})`);
+          traversalLogStrings.push(
+            `[DFS] Backtrack <${node.tag}> (id=${numericId})`,
+          );
         }
       }
 
       // Format final data (hanya matched nodes, dibatasi limitTop)
-      const limitedMatched = limitTop !== undefined
-        ? queryResult.matchedNodes.slice(0, limitTop)
-        : queryResult.matchedNodes;
+      const limitedMatched =
+        limitTop !== undefined
+          ? queryResult.matchedNodes.slice(0, limitTop)
+          : queryResult.matchedNodes;
 
       finalData = limitedMatched.map((node) => {
         const numericId = nodeToNumericId.get(node)!;
