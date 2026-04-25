@@ -791,18 +791,6 @@ export default function Home() {
                 />
               </div>
               <span style={{ fontSize: 12, color: "#94a3b8" }}>LCA Query</span>
-              <span
-                style={{
-                  fontSize: 10,
-                  padding: "1px 7px",
-                  borderRadius: 999,
-                  background: "#06B6D422",
-                  color: "#06B6D4",
-                  border: "1px solid #06B6D455",
-                }}
-              >
-                BONUS
-              </span>
             </div>
 
             {/* LCA inputs — hanya muncul kalau toggle ON */}

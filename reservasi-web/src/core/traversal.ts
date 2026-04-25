@@ -139,20 +139,18 @@ export class TreeTraversal {
   private static readonly LOG = 20;
 
   // Binary lifting tables
-  private static up = new Map<DOMNode, DOMNode[]>();
+  private static upperN = new Map<DOMNode, DOMNode[]>();
   private static depthMap = new Map<DOMNode, number>();
 
   // LCA Preprocessing
   public static preprocess(root: DOMNode): void {
-    this.up.clear();
+    this.upperN.clear();
     this.depthMap.clear();
     this.depthMap.set(root, 0);
 
-    // Root: semua ancestor menunjuk ke dirinya sendiri
     const rootAncestors: DOMNode[] = new Array(this.LOG).fill(root);
-    this.up.set(root, rootAncestors);
+    this.upperN.set(root, rootAncestors);
 
-    // Proses children root (root sudah ada di up map)
     for (const child of root.children) {
       this.depthMap.set(child, 1);
       this.lcaBuild(child);
@@ -160,22 +158,18 @@ export class TreeTraversal {
   }
 
   private static lcaBuild(node: DOMNode): void {
-    // up[node][0] = parent langsung (root → root sendiri)
     const parent = node.parent ?? node;
 
     const ancestors: DOMNode[] = new Array(this.LOG);
     ancestors[0] = parent;
 
     for (let i = 1; i < this.LOG; i++) {
-      // 2^i-th ancestor = 2^(i-1)-th ancestor dari 2^(i-1)-th ancestor
-      // Karena parent sudah diproses sebelum child (DFS preorder),
-      // up.get(ancestors[i-1]) pasti sudah ada saat kita sampai di sini
       const half = ancestors[i - 1];
-      const halfUp = this.up.get(half);
+      const halfUp = this.upperN.get(half);
       ancestors[i] = halfUp ? halfUp[i - 1] : half;
     }
 
-    this.up.set(node, ancestors);
+    this.upperN.set(node, ancestors);
 
     for (const child of node.children) {
       this.depthMap.set(child, (this.depthMap.get(node) ?? 0) + 1);
@@ -197,7 +191,7 @@ export class TreeTraversal {
     let diff = da - db;
     for (let i = 0; i < this.LOG; i++) {
       if (diff & (1 << i)) {
-        a = this.up.get(a)?.[i] ?? a;
+        a = this.upperN.get(a)?.[i] ?? a;
       }
     }
 
@@ -205,15 +199,15 @@ export class TreeTraversal {
 
     // Naikkan keduanya bersama sampai tepat di bawah LCA
     for (let i = this.LOG - 1; i >= 0; i--) {
-      const upA = this.up.get(a)?.[i];
-      const upB = this.up.get(b)?.[i];
+      const upA = this.upperN.get(a)?.[i];
+      const upB = this.upperN.get(b)?.[i];
       if (upA && upB && upA !== upB) {
         a = upA;
         b = upB;
       }
     }
 
-    return this.up.get(a)?.[0] ?? null;
+    return this.upperN.get(a)?.[0] ?? null;
   }
 
  
@@ -318,7 +312,6 @@ function runDFS(
       dfs(child);
     }
 
-    // Backtrack hanya kalau tidak match dan belum stop
     if (!stopped && !isMatch) {
       if (animate) {
         steps.push({
@@ -385,7 +378,7 @@ function runBFS(
       }
       log.push(`[BFS] ✓ MATCH <${node.tag}> (id=${nodeId})`);
 
-      // Early stop BFS jika limit tercapai
+
       if (limitTop !== undefined && matches.length >= limitTop) {
         log.push(`[BFS] Limit ${limitTop} tercapai, pencarian dihentikan.`);
         break;
@@ -403,7 +396,6 @@ function runBFS(
 export function runTraversal(options: TraversalOptions): TraversalResult {
   const { root, method, selector, animate, limitTop } = options;
 
-  // Reset cache selector untuk run ini
   _cachedSelector = "";
   _cachedParsed = null;
 
@@ -420,7 +412,7 @@ export function runTraversal(options: TraversalOptions): TraversalResult {
 
   const timeMs = Date.now() - startTime;
   const maxDepth = computeMaxDepth(root);
-  // Matches sudah dibatasi di dalam runDFS/runBFS via early stop
+
   const finalMatches = matches;
 
   log.push(`[Engine] Selesai. Visited=${visitedCount}, Matched=${finalMatches.length}, Time=${timeMs}ms`);
