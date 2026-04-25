@@ -137,7 +137,6 @@ https://tubes2-reservasi.azurewebsites.net
 | 12 | [Bonus] Implementasi multithreading | | ✓ |
 | 13 | [Bonus] Implementasi LCA Binary Lifting |  ✓| |
 
-> Sesuaikan checklist di atas dengan fitur yang sudah diimplementasikan.
 
 ---
 
